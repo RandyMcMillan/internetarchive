@@ -1,0 +1,257 @@
+#
+# The internetarchive module is a Python/CLI interface to Archive.org.
+#
+# Copyright (C) 2012-2026 Internet Archive
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+"""
+internetarchive.forums
+~~~~~~~~~~~~~~~~~~~~~~
+
+Read and write Archive.org collection forums.
+
+A forum's identifier is the identifier of the collection it belongs to
+(e.g. ``GratefulDead``). Threads and posts have their own numeric ids;
+a thread id is the id of its root post.
+
+There is no supported forum API yet, so this module is currently backed
+by the legacy ``/iathreads/`` pages and the Offshoot listing service via
+the private :class:`_IathreadsBackend`. The public surface —
+:class:`Forum`, :func:`get_thread`, and the dataclasses — is designed to
+stay stable when a proper API replaces that backend.
+
+:copyright: (C) 2012-2026 by Internet Archive.
+:license: AGPL 3, see LICENSE for more details.
+"""
+
+from __future__ import annotations
+
+import html as html_lib
+import re
+from dataclasses import dataclass
+from datetime import datetime
+
+from internetarchive.exceptions import ForumError
+
+__all__ = ["ForumPost", "ForumThread", "ThreadSummary"]
+
+
+@dataclass(frozen=True)
+class ThreadSummary:
+    """One thread in a forum listing.
+
+    :param id: Thread id (the root post's id), e.g. ``"2445301"``.
+    :param subject: Subject of the root post.
+    :param poster: Screen name of the root poster.
+    :param replies: Number of replies to the root post.
+    :param date: When the root post was made (site-local, naive).
+    :param last_post_date: Most recent activity in the thread (site-local,
+        naive); equals ``date`` when there are no replies in the listing.
+    """
+
+    id: str
+    subject: str
+    poster: str
+    replies: int
+    date: datetime
+    last_post_date: datetime
+
+
+@dataclass(frozen=True)
+class ForumPost:
+    """A single post within a forum thread.
+
+    :param id: Post id.
+    :param thread_id: Id of the thread this post belongs to.
+    :param parent_id: Id of the post this replies to; ``None`` for the root.
+    :param depth: Nesting depth; ``0`` for the thread root.
+    :param poster: Screen name of the poster.
+    :param date: When the post was made (site-local, naive).
+    :param subject: Post subject.
+    :param body: Post body as plain text (tags stripped, entities unescaped).
+    :param body_html: Post body as raw HTML.
+    """
+
+    id: str
+    thread_id: str
+    parent_id: str | None
+    depth: int
+    poster: str
+    date: datetime
+    subject: str
+    body: str
+    body_html: str
+
+
+@dataclass(frozen=True)
+class ForumThread:
+    """A forum thread: the root post and all replies.
+
+    :param id: Thread id (the root post's id).
+    :param forum_id: Identifier of the forum (= collection identifier).
+    :param subject: Subject of the root post.
+    :param posts: All posts in document order; ``depth`` gives the tree.
+    """
+
+    id: str
+    forum_id: str
+    subject: str
+    posts: list[ForumPost]
+
+
+# ---------------------------------------------------------------------------
+# Parsers for the legacy iathreads pages. Everything below is private and
+# disposable: it exists only until a proper forum API replaces the backend.
+# ---------------------------------------------------------------------------
+
+_LISTING_ROW_RE = re.compile(r'<tr valign="top"\s+class="(?:eve|odd) forumRow">')
+_POST_LINK_RE = re.compile(r'<a href="/post/(\d+)">\s*(.*?)\s*</a>', re.S)
+_POSTER_LINK_RE = re.compile(r'poster=[^"]*"\s*>\s*(.*?)\s*</a>', re.S)
+_COUNT_CELL_RE = re.compile(r"<td>\s*(\d+)\s*</td>")
+_DATE_CELL_RE = re.compile(r"<nobr[^>]*>([^<]+)</nobr>")
+_POST_BOX_MARKER = '<div class="box well well-sm"'
+_REPLY_LINK_RE = re.compile(
+    r"reply=1&(?:amp;)?parentid=(\d+)&(?:amp;)?threadid=(\d+)&(?:amp;)?nested=(\d+)"
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+_BR_RE = re.compile(r"<br\s*/?>", re.I)
+
+
+def _parse_date(text: str) -> datetime:
+    """Parse a forum timestamp like ``Jul 23, 2026 7:26am``.
+
+    :param text: The timestamp text as rendered by the forum pages.
+    :returns: A naive :class:`datetime.datetime` (site-local time).
+    """
+    return datetime.strptime(text.strip(), "%b %d, %Y %I:%M%p")
+
+
+def _clean(text: str) -> str:
+    """Strip tags, unescape entities, and collapse whitespace."""
+    return " ".join(html_lib.unescape(_TAG_RE.sub("", text)).split())
+
+
+def _parse_listing(listing_html: str) -> list[ThreadSummary]:
+    """Parse the Offshoot forum listing table into thread summaries.
+
+    Reply rows (indented with ``&nbsp;``) follow their thread root in the
+    table; they only contribute to ``last_post_date``.
+
+    :param listing_html: The ``value.html`` payload from Offshoot.
+    :returns: Thread summaries in listing order.
+    :raises ForumError: If a row cannot be parsed.
+    """
+    rows = _LISTING_ROW_RE.split(listing_html)[1:]
+    threads: list[dict] = []
+    for row in rows:
+        link = _POST_LINK_RE.search(row)
+        poster = _POSTER_LINK_RE.search(row)
+        count = _COUNT_CELL_RE.search(row)
+        date_cell = _DATE_CELL_RE.search(row)
+        if not (link and poster and count and date_cell):
+            raise ForumError(
+                "could not parse a forum listing row -- the page format may "
+                "have changed; please report this at "
+                "https://github.com/jjjake/internetarchive/issues"
+            )
+        date = _parse_date(date_cell.group(1))
+        is_reply = "&nbsp;" in row.split("<a", 1)[0]
+        if is_reply:
+            if threads and date > threads[-1]["last_post_date"]:
+                threads[-1]["last_post_date"] = date
+            continue
+        threads.append(
+            {
+                "id": link.group(1),
+                "subject": _clean(link.group(2)),
+                "poster": _clean(poster.group(1)),
+                "replies": int(count.group(1)),
+                "date": date,
+                "last_post_date": date,
+            }
+        )
+    return [ThreadSummary(**t) for t in threads]
+
+
+def _field_cell(block: str, label: str) -> str | None:
+    """Extract the value cell following a ``<strong>Label:</strong>`` cell."""
+    m = re.search(
+        rf"<strong>{label}:</strong>\s*</td>\s*<td[^>]*>(.*?)</td>", block, re.S
+    )
+    return _clean(m.group(1)) if m else None
+
+
+def _parse_post_block(block: str, parents: dict[int, str]) -> ForumPost:
+    """Parse one ``div.box.well.well-sm`` post block from a thread page.
+
+    :param block: The block's HTML (from the box div marker to the next).
+    :param parents: Mutable map of depth -> most recent post id at that
+        depth, used to derive ``parent_id``; updated in place.
+    :raises ForumError: If the block cannot be parsed.
+    """
+    reply_link = _REPLY_LINK_RE.search(block)
+    poster = _field_cell(block, "Poster")
+    date = _field_cell(block, "Date")
+    subject = _field_cell(block, "Subject")
+    if not (reply_link and poster and date and subject) or "</h2>" not in block:
+        raise ForumError(
+            "could not parse a forum post -- the page format may have "
+            "changed; please report this at "
+            "https://github.com/jjjake/internetarchive/issues"
+        )
+    post_id, thread_id, nested = reply_link.groups()
+    depth = int(nested) - 1
+    parents[depth] = post_id
+    body_html = block.split("</h2>", 1)[1]
+    body_html = body_html.split("<!--/.container-->")[0]
+    # The trailing </div>s close the post box (and, on the last post of the
+    # page, its containers). A body that itself ends with a closing div
+    # would lose it here -- an accepted limitation of this scrape.
+    body_html = re.sub(r"(\s*</div>)+\s*$", "", body_html).strip()
+    body = html_lib.unescape(_TAG_RE.sub("", _BR_RE.sub("\n", body_html))).strip()
+    return ForumPost(
+        id=post_id,
+        thread_id=thread_id,
+        parent_id=parents.get(depth - 1) if depth > 0 else None,
+        depth=depth,
+        poster=poster,
+        date=_parse_date(date),
+        subject=subject,
+        body=body,
+        body_html=body_html,
+    )
+
+
+def _parse_thread(page_html: str) -> ForumThread:
+    """Parse a ``/post/<thread-id>`` page into a :class:`ForumThread`.
+
+    :param page_html: The full thread page HTML.
+    :raises ForumError: If no posts can be parsed from the page.
+    """
+    blocks = page_html.split(_POST_BOX_MARKER)[1:]
+    parents: dict[int, str] = {}
+    posts = [_parse_post_block(b, parents) for b in blocks]
+    if not posts:
+        raise ForumError(
+            "no posts found on the thread page -- the page format may have "
+            "changed; please report this at "
+            "https://github.com/jjjake/internetarchive/issues"
+        )
+    root = posts[0]
+    m = re.search(r'href="/details/([^"?]+)\?tab=forum"', page_html)
+    forum_id = m.group(1) if m else ""
+    return ForumThread(
+        id=root.thread_id, forum_id=forum_id, subject=root.subject, posts=posts
+    )
