@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import responses
 
+import internetarchive
 from internetarchive import forums, get_session
 from internetarchive.exceptions import (
     AuthenticationError,
@@ -370,6 +371,87 @@ def test_create_forum_verify_fails():
     )
     with pytest.raises(ForumError, match="was not created"):
         _backend().create_forum("mycoll", "Name", None, "0", "0")
+
+
+@responses.activate
+def test_forum_construction_is_cheap():
+    # no responses registered: any HTTP request would fail the test
+    forum = _session().get_forum("GratefulDead")
+    assert forum.identifier == "GratefulDead"
+
+
+@responses.activate
+def test_forum_threads_and_thread():
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        body=(DATA / "offshoot_listing.json").read_text(),
+        content_type="application/json",
+    )
+    responses.add(
+        responses.GET,
+        "https://archive.org/post/2445301",
+        body=(DATA / "thread.html").read_text(),
+    )
+    forum = _session().get_forum("GratefulDead")
+    assert [t.id for t in forum.threads()] == ["2445301", "2445295"]
+    assert forum.thread("2445301").forum_id == "GratefulDead"
+
+
+@responses.activate
+def test_forum_reply_defaults():
+    # subject defaults to "Re: <root subject>", parent to the thread root
+    responses.add(
+        responses.GET,
+        "https://archive.org/post/2445301",
+        body=(DATA / "thread.html").read_text(),
+    )
+    responses.add(responses.GET, POST_NEW_URL, body=_compose_form())
+    forum = _session().get_forum("GratefulDead")
+    fields = forum.reply("2445301", "body text", dry_run=True)
+    assert fields["postsubject"] == "Re: First and Last GD Song You Saw"
+    assert fields["parentid"] == "2445301"
+    assert fields["threadid"] == "2445301"
+
+
+@responses.activate
+def test_forum_reply_no_double_re_prefix():
+    responses.add(responses.GET, POST_NEW_URL, body=_compose_form())
+    forum = _session().get_forum("GratefulDead")
+    fields = forum.reply("2445301", "b", subject="Re: Already prefixed", dry_run=True)
+    assert fields["postsubject"] == "Re: Already prefixed"
+    # explicit subject: the thread page is never fetched
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_module_get_thread():
+    responses.add(
+        responses.GET,
+        "https://archive.org/post/2445301",
+        body=(DATA / "thread.html").read_text(),
+    )
+    thread = forums.get_thread(_session(), "2445301")
+    assert thread.id == "2445301"
+    assert thread.forum_id == "GratefulDead"
+
+
+def test_item_get_forum_factory():
+    session = _session()
+    item = session.get_item(
+        "GratefulDead",
+        item_metadata={"metadata": {"identifier": "GratefulDead"}},
+    )
+    forum = item.get_forum()
+    assert isinstance(forum, forums.Forum)
+    assert forum.identifier == "GratefulDead"
+    assert forum.session is session
+
+
+def test_api_get_forum_factory():
+    forum = internetarchive.get_forum("GratefulDead", config_file=TEST_CONFIG)
+    assert isinstance(forum, forums.Forum)
+    assert forum.identifier == "GratefulDead"
 
 
 @responses.activate

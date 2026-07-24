@@ -50,7 +50,7 @@ from internetarchive.exceptions import (
     ForumNotFoundError,
 )
 
-__all__ = ["ForumPost", "ForumThread", "ThreadSummary"]
+__all__ = ["Forum", "ForumPost", "ForumThread", "ThreadSummary", "get_thread"]
 
 
 @dataclass(frozen=True)
@@ -574,3 +574,197 @@ class _IathreadsBackend:
                 "the request but the forum still does not exist)"
             )
         return None
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+class Forum:
+    """The forum of an Archive.org collection.
+
+    Construction is cheap -- no requests are made until a method is
+    called. Forums are created per collection, so a forum's identifier is
+    its collection's identifier and not every collection has one; see
+    :meth:`exists` and :meth:`create`.
+
+    Write methods return ``None`` on success and raise on failure (the
+    current backend cannot report the new post's id). All write methods
+    accept ``dry_run=True``, which performs only safe GET requests and
+    returns the exact fields that would have been submitted.
+
+    Usage:
+        >>> from internetarchive import get_forum
+        >>> forum = get_forum('GratefulDead')
+        >>> for thread in forum.threads():
+        ...     print(thread.id, thread.subject)
+
+    :param archive_session: An :class:`ArchiveSession
+        <internetarchive.session.ArchiveSession>` object.
+    :param identifier: The forum identifier (= the collection identifier),
+        e.g. ``GratefulDead``.
+    """
+
+    def __init__(self, archive_session, identifier: str):
+        self.session = archive_session
+        self.identifier = identifier
+        self._backend = _IathreadsBackend(archive_session)
+
+    def __repr__(self) -> str:
+        return f"Forum(identifier={self.identifier!r})"
+
+    def exists(self) -> bool:
+        """Return whether this forum exists.
+
+        :returns: ``True`` if the forum exists.
+        """
+        return self._backend.exists(self.identifier)
+
+    def threads(self) -> list[ThreadSummary]:
+        """List recent threads in this forum.
+
+        The current backend returns a recent-activity window (roughly the
+        last 150 posts), not the forum's full history.
+
+        :returns: :class:`ThreadSummary` objects in listing order.
+        :raises ForumNotFoundError: If the forum does not exist.
+        """
+        return self._backend.list_posts(self.identifier)
+
+    def thread(self, thread_id: str) -> ForumThread:
+        """Fetch a thread and all of its posts.
+
+        :param thread_id: The thread id (= the root post's id).
+        :returns: A :class:`ForumThread`.
+        :raises ForumNotFoundError: If the thread does not exist.
+        """
+        return self._backend.get_thread(thread_id)
+
+    def post(self, subject: str, body: str, dry_run: bool = False):
+        """Post a new thread to this forum.
+
+        :param subject: The post subject.
+        :param body: The post body (plain text).
+        :param dry_run: Fetch the compose form but return the would-be
+            POST fields instead of posting.
+        :returns: ``None`` on success; the field dict when ``dry_run``.
+        :raises ForumNotFoundError: If the forum does not exist (forums
+            are never created implicitly; see :meth:`create`).
+        :raises AuthenticationError: If not logged in.
+        :raises ForumError: If the post is rejected.
+        """
+        return self._backend.submit_post(
+            self.identifier, subject, body, dry_run=dry_run
+        )
+
+    def reply(
+        self,
+        thread_id: str,
+        body: str,
+        subject: str | None = None,
+        parent_id: str | None = None,
+        dry_run: bool = False,
+    ):
+        """Reply to a thread (or to a specific post within it).
+
+        :param thread_id: The thread id (= the root post's id).
+        :param body: The reply body (plain text).
+        :param subject: The reply subject; defaults to ``Re: <root
+            subject>`` (fetching the thread to learn it).
+        :param parent_id: The post being replied to; defaults to the
+            thread root.
+        :param dry_run: Fetch the forms but return the would-be POST
+            fields instead of posting.
+        :returns: ``None`` on success; the field dict when ``dry_run``.
+        :raises AuthenticationError: If not logged in.
+        :raises ForumError: If the reply is rejected.
+        """
+        if subject is None:
+            root_subject = self.thread(thread_id).subject
+            if root_subject.startswith("Re:"):
+                subject = root_subject
+            else:
+                subject = f"Re: {root_subject}"
+        return self._backend.submit_reply(
+            self.identifier,
+            thread_id,
+            parent_id or thread_id,
+            subject,
+            body,
+            dry_run=dry_run,
+        )
+
+    def edit(
+        self,
+        post_id: str,
+        thread_id: str,
+        subject: str,
+        body: str,
+        dry_run: bool = False,
+    ):
+        """Edit one of your own posts.
+
+        :param post_id: The id of the post to edit.
+        :param thread_id: The id of the thread containing the post.
+        :param subject: The new subject.
+        :param body: The new body (plain text).
+        :param dry_run: Fetch the form but return the would-be POST
+            fields instead of posting.
+        :returns: ``None`` on success; the field dict when ``dry_run``.
+        :raises AuthenticationError: If not logged in.
+        :raises ForumError: If the edit is rejected (e.g. not your post).
+        """
+        return self._backend.submit_edit(
+            self.identifier, post_id, thread_id, subject, body, dry_run=dry_run
+        )
+
+    def create(
+        self,
+        name: str,
+        home: str | None = None,
+        public_read: str = "0",
+        public_write: str = "0",
+        dry_run: bool = False,
+    ):
+        """Create this forum. An explicit operation -- nothing in this
+        library ever creates a forum implicitly.
+
+        Forum creation is privilege-gated server-side; most accounts
+        cannot do it.
+
+        :param name: Human-readable forum name, e.g. ``Grateful Dead
+            Forum``.
+        :param home: Forum home page path, e.g.
+            ``/details/<identifier>?tab=forum``.
+        :param public_read: Read permission: ``"0"`` for everyone, or a
+            privilege path (e.g. ``/texts``) to restrict to those admins.
+        :param public_write: Write permission; same semantics.
+        :param dry_run: Return the would-be POST fields without posting.
+        :returns: ``None`` on success; the field dict when ``dry_run``.
+        :raises AuthenticationError: If not logged in or not authorized.
+        :raises ForumError: If the forum was not created.
+        """
+        return self._backend.create_forum(
+            self.identifier,
+            name,
+            home,
+            public_read,
+            public_write,
+            dry_run=dry_run,
+        )
+
+
+def get_thread(archive_session, thread_id: str) -> ForumThread:
+    """Fetch a forum thread by id, without knowing its forum.
+
+    The returned thread's ``forum_id`` identifies the forum it belongs
+    to, so this is also the way to resolve a bare thread/post id.
+
+    :param archive_session: An :class:`ArchiveSession
+        <internetarchive.session.ArchiveSession>` object.
+    :param thread_id: The thread id (= the root post's id).
+    :returns: A :class:`ForumThread`.
+    :raises ForumNotFoundError: If the thread does not exist.
+    """
+    return _IathreadsBackend(archive_session).get_thread(thread_id)
