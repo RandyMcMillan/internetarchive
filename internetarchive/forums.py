@@ -43,7 +43,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
-from internetarchive.exceptions import ForumError
+from internetarchive.exceptions import ForumError, ForumNotFoundError
 
 __all__ = ["ForumPost", "ForumThread", "ThreadSummary"]
 
@@ -255,3 +255,93 @@ def _parse_thread(page_html: str) -> ForumThread:
     return ForumThread(
         id=root.thread_id, forum_id=forum_id, subject=root.subject, posts=posts
     )
+
+
+# ---------------------------------------------------------------------------
+# Backend
+# ---------------------------------------------------------------------------
+
+_OFFSHOOT_PATH = "/services/offshoot/forum-posts.php"
+_POST_PAGE_PATH = "/post"
+
+
+class _IathreadsBackend:
+    """Client for the legacy iathreads pages and the Offshoot listing.
+
+    Private and disposable: when a proper forum API ships, a replacement
+    backend with the same method signatures slots in behind
+    :class:`Forum` and this class (plus the parsers above) is deleted.
+
+    :param archive_session: An :class:`ArchiveSession
+        <internetarchive.session.ArchiveSession>` object.
+    """
+
+    def __init__(self, archive_session):
+        self.session = archive_session
+        self.base_url = f"{archive_session.protocol}//{archive_session.host}"
+
+    # -- reads --------------------------------------------------------------
+
+    def _offshoot(self, forum_id: str) -> dict:
+        """Fetch the Offshoot listing envelope for ``forum_id``.
+
+        :returns: The ``value`` object (``{"exists": bool, "html": ...}``).
+        :raises ForumError: If the envelope reports failure.
+        """
+        r = self.session.get(
+            f"{self.base_url}{_OFFSHOOT_PATH}",
+            params={"forum_id": forum_id},
+            timeout=30,
+        )
+        j = r.json()
+        if not j.get("success"):
+            raise ForumError(f"forum listing failed: {j.get('error', r.text[:200])}")
+        return j["value"]
+
+    def exists(self, forum_id: str) -> bool:
+        """Return whether a forum exists for ``forum_id``."""
+        return bool(self._offshoot(forum_id).get("exists"))
+
+    def list_posts(self, forum_id: str) -> list[ThreadSummary]:
+        """List recent threads in a forum.
+
+        The current backend returns a recent-activity window (roughly the
+        last 150 posts), not the forum's full history.
+
+        :raises ForumNotFoundError: If the forum does not exist.
+        :raises ForumError: If the listing cannot be parsed.
+        """
+        value = self._offshoot(forum_id)
+        if not value.get("exists"):
+            raise ForumNotFoundError(
+                f"forum '{forum_id}' does not exist -- forums are created "
+                "per collection; see 'ia forum create'"
+            )
+        listing_html = value.get("html") or ""
+        if "forumRow" not in listing_html:
+            raise ForumError(
+                "no forum table found in the listing -- the page format "
+                "may have changed; please report this at "
+                "https://github.com/jjjake/internetarchive/issues"
+            )
+        return _parse_listing(listing_html)
+
+    def get_thread(self, thread_id: str) -> ForumThread:
+        """Fetch and parse a thread page.
+
+        :raises ForumNotFoundError: If the thread does not exist.
+        :raises ForumError: If the page cannot be parsed.
+        """
+        r = self.session.get(
+            f"{self.base_url}{_POST_PAGE_PATH}/{thread_id}", timeout=30
+        )
+        if r.status_code == 404:
+            raise ForumNotFoundError(f"thread '{thread_id}' does not exist")
+        r.raise_for_status()
+        if _POST_BOX_MARKER not in r.text:
+            raise ForumError(
+                "no posts found on the thread page -- the page format may "
+                "have changed; please report this at "
+                "https://github.com/jjjake/internetarchive/issues"
+            )
+        return _parse_thread(r.text)

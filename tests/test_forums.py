@@ -1,9 +1,29 @@
 import json
 from pathlib import Path
 
-from internetarchive import forums
+import pytest
+import responses
+
+from internetarchive import forums, get_session
+from internetarchive.exceptions import ForumError, ForumNotFoundError
 
 DATA = Path(__file__).parent / "data" / "forums"
+OFFSHOOT_URL = "https://archive.org/services/offshoot/forum-posts.php"
+TEST_CONFIG = str(Path(__file__).parent / "ia.ini")
+
+
+def _session(cookies=True):
+    config = {}
+    if cookies:
+        config["cookies"] = {
+            "logged-in-user": "test%40example.com",
+            "logged-in-sig": "test-sig",
+        }
+    return get_session(config=config, config_file=TEST_CONFIG)
+
+
+def _backend(cookies=True):
+    return forums._IathreadsBackend(_session(cookies=cookies))
 
 
 def _listing_html():
@@ -58,3 +78,102 @@ def test_parse_thread_body_newlines_and_entities():
     # <br /><br /> becomes newlines; &amp; is unescaped
     assert "\n" in root.body
     assert "Dead & Co" in root.body
+
+
+@responses.activate
+def test_backend_exists():
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": True, "value": {"exists": True, "html": ""}},
+    )
+    assert _backend().exists("GratefulDead") is True
+
+
+@responses.activate
+def test_backend_exists_false():
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": True, "value": {"exists": False, "html": None}},
+    )
+    assert _backend().exists("nosuchforum") is False
+
+
+@responses.activate
+def test_backend_offshoot_envelope_error():
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": False, "error": '"forum_id" not found'},
+    )
+    with pytest.raises(ForumError, match="forum_id"):
+        _backend().list_posts("GratefulDead")
+
+
+@responses.activate
+def test_backend_list_posts():
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        body=(DATA / "offshoot_listing.json").read_text(),
+        content_type="application/json",
+    )
+    threads = _backend().list_posts("GratefulDead")
+    assert [t.id for t in threads] == ["2445301", "2445295"]
+
+
+@responses.activate
+def test_backend_list_posts_not_found():
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": True, "value": {"exists": False, "html": None}},
+    )
+    with pytest.raises(ForumNotFoundError, match="ia forum create"):
+        _backend().list_posts("nosuchforum")
+
+
+@responses.activate
+def test_backend_list_posts_format_changed():
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={
+            "success": True,
+            "value": {"exists": True, "html": "<div>redesigned!</div>"},
+        },
+    )
+    with pytest.raises(ForumError, match="format may have changed"):
+        _backend().list_posts("GratefulDead")
+
+
+@responses.activate
+def test_backend_get_thread():
+    responses.add(
+        responses.GET,
+        "https://archive.org/post/2445301",
+        body=(DATA / "thread.html").read_text(),
+    )
+    thread = _backend().get_thread("2445301")
+    assert thread.id == "2445301"
+    assert thread.forum_id == "GratefulDead"
+    assert len(thread.posts) == 2
+
+
+@responses.activate
+def test_backend_get_thread_not_found():
+    responses.add(responses.GET, "https://archive.org/post/999999999", status=404)
+    with pytest.raises(ForumNotFoundError, match="999999999"):
+        _backend().get_thread("999999999")
+
+
+@responses.activate
+def test_backend_get_thread_format_changed():
+    responses.add(
+        responses.GET,
+        "https://archive.org/post/2445301",
+        body="<html><body>redesigned!</body></html>",
+    )
+    with pytest.raises(ForumError, match="format may have changed"):
+        _backend().get_thread("2445301")
