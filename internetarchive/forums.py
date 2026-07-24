@@ -42,8 +42,13 @@ import html as html_lib
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import quote
 
-from internetarchive.exceptions import ForumError, ForumNotFoundError
+from internetarchive.exceptions import (
+    AuthenticationError,
+    ForumError,
+    ForumNotFoundError,
+)
 
 __all__ = ["ForumPost", "ForumThread", "ThreadSummary"]
 
@@ -263,6 +268,15 @@ def _parse_thread(page_html: str) -> ForumThread:
 
 _OFFSHOOT_PATH = "/services/offshoot/forum-posts.php"
 _POST_PAGE_PATH = "/post"
+_POST_NEW_PATH = "/iathreads/post-new.php"
+_FORUM_NEW_PATH = "/iathreads/forum-new.php"
+_TITLE_RE = re.compile(r"<title>([^<]*)</title>")
+
+
+def _page_title(page_html: str) -> str:
+    """Return the stripped ``<title>`` of a page, or ``""``."""
+    m = _TITLE_RE.search(page_html)
+    return m.group(1).strip() if m else ""
 
 
 class _IathreadsBackend:
@@ -345,3 +359,218 @@ class _IathreadsBackend:
                 "https://github.com/jjjake/internetarchive/issues"
             )
         return _parse_thread(r.text)
+
+    # -- writes ---------------------------------------------------------------
+    #
+    # Writing goes through the same form the browser uses: GET the compose
+    # form (which sets an HttpOnly `ia-csrf` cookie and embeds a JWT whose
+    # nonce claim must match it -- a double-submit check), then POST the
+    # form back as multipart/form-data. The `submit` field must be
+    # "Submit Post": the form has a second "Add Files" submit button that
+    # fails silently. (Validator: petabox www/common/Auth.inc.)
+
+    def _require_auth(self) -> None:
+        """Fail fast when the session carries no archive.org login cookies.
+
+        :raises AuthenticationError: If `logged-in-user`/`logged-in-sig`
+            cookies are absent from the session.
+        """
+        names = {c.name for c in self.session.cookies}
+        if not {"logged-in-user", "logged-in-sig"} <= names:
+            raise AuthenticationError(
+                "forum writes require your archive.org login cookies "
+                "(logged-in-user/logged-in-sig) -- run 'ia configure' first"
+            )
+
+    def _fetch_form(self, form_url: str, forum_id: str | None) -> dict:
+        """GET a compose/reply/edit form and scrape the fields to echo back.
+
+        The GET also lands the `ia-csrf` cookie in the session jar, which
+        the subsequent POST must carry.
+
+        :param form_url: The post-new.php URL for this operation.
+        :param forum_id: Forum identifier, used to disambiguate a missing
+            csrf token (nonexistent forum vs. stale login); may be ``None``
+            when the operation doesn't know the forum (never the case
+            today, but tolerated).
+        :returns: ``{"csrf_token": ..., "date": ...}``.
+        :raises ForumNotFoundError: If the forum does not exist.
+        :raises AuthenticationError: If the form has no csrf token but the
+            forum exists (missing or stale login cookies).
+        """
+        r = self.session.get(form_url, timeout=30)
+
+        def val(name: str) -> str | None:
+            m = re.search(rf'name="{name}"[^>]*value="([^"]*)"', r.text)
+            return html_lib.unescape(m.group(1)) if m else None
+
+        csrf_token, date = val("csrf_token"), val("date")
+        if not csrf_token or not date:
+            if forum_id is not None and not self.exists(forum_id):
+                raise ForumNotFoundError(
+                    f"forum '{forum_id}' does not exist -- forums are "
+                    "created per collection; see 'ia forum create'"
+                )
+            raise AuthenticationError(
+                "could not scrape csrf_token/date from the compose form -- "
+                "your login cookies may be missing or stale; run "
+                "'ia configure'"
+            )
+        return {"csrf_token": csrf_token, "date": date}
+
+    def _submit(
+        self,
+        form_url: str,
+        forum_id: str,
+        subject: str,
+        body: str,
+        extra: dict,
+        dry_run: bool,
+        success_marker: str = "Successful",
+    ) -> dict | None:
+        """Run the form round-trip shared by post/reply/edit.
+
+        :param extra: Operation-specific POST fields.
+        :param dry_run: If true, fetch the form but return the would-be
+            POST fields instead of posting.
+        :returns: The field dict when ``dry_run``, else ``None``.
+        :raises ForumError: If the response page does not signal success.
+        """
+        self._require_auth()
+        scraped = self._fetch_form(form_url, forum_id)
+        fields = {
+            "date": scraped["date"],
+            "postsubject": subject,
+            "postbody": body,
+            "forum": forum_id,
+            "csrf_token": scraped["csrf_token"],
+            "referer": "",
+            **extra,
+            "submit": "Submit Post",
+        }
+        if dry_run:
+            return fields
+        r = self.session.post(
+            f"{self.base_url}{_POST_NEW_PATH}",
+            files={k: (None, str(v)) for k, v in fields.items()},
+            timeout=60,
+        )
+        title = _page_title(r.text)
+        if success_marker not in title:
+            raise ForumError(
+                f"post rejected (response title: {title!r}) -- usual "
+                "causes: wrong forum id, editing a post that isn't yours, "
+                "or a stale form (each attempt fetches a fresh token)"
+            )
+        return None
+
+    def submit_post(
+        self, forum_id: str, subject: str, body: str, dry_run: bool = False
+    ) -> dict | None:
+        """Post a new thread to a forum.
+
+        :returns: The would-be POST fields when ``dry_run``, else ``None``.
+        """
+        form_url = f"{self.base_url}{_POST_NEW_PATH}?forum={quote(forum_id)}"
+        return self._submit(form_url, forum_id, subject, body, {}, dry_run)
+
+    def submit_reply(
+        self,
+        forum_id: str,
+        thread_id: str,
+        parent_id: str,
+        subject: str,
+        body: str,
+        dry_run: bool = False,
+    ) -> dict | None:
+        """Reply to a post in a thread.
+
+        :param parent_id: The post being replied to (the thread id itself
+            when replying to the root).
+        :returns: The would-be POST fields when ``dry_run``, else ``None``.
+        """
+        form_url = (
+            f"{self.base_url}{_POST_NEW_PATH}?reply=1"
+            f"&parentid={quote(parent_id)}&threadid={quote(thread_id)}"
+            f"&nested=1&subject={quote(subject)}&forum={quote(forum_id)}"
+        )
+        extra = {"parentid": parent_id, "threadid": thread_id, "nested": "1"}
+        return self._submit(form_url, forum_id, subject, body, extra, dry_run)
+
+    def submit_edit(
+        self,
+        forum_id: str,
+        post_id: str,
+        thread_id: str,
+        subject: str,
+        body: str,
+        dry_run: bool = False,
+    ) -> dict | None:
+        """Edit one of your own posts.
+
+        :returns: The would-be POST fields when ``dry_run``, else ``None``.
+        """
+        form_url = (
+            f"{self.base_url}{_POST_NEW_PATH}?action=edit"
+            f"&id={quote(post_id)}&threadid={quote(thread_id)}"
+        )
+        extra = {"action": "edit", "id": post_id, "threadid": thread_id}
+        return self._submit(
+            form_url,
+            forum_id,
+            subject,
+            body,
+            extra,
+            dry_run,
+            success_marker="modification Successful",
+        )
+
+    def create_forum(
+        self,
+        forum_id: str,
+        name: str,
+        home: str | None,
+        public_read: str,
+        public_write: str,
+        dry_run: bool = False,
+    ) -> dict | None:
+        """Create a forum for a collection. Explicit operation only.
+
+        Unlike posting, the create form has no csrf token; it is a plain
+        urlencoded POST gated server-side by account privileges. Because
+        the response page shape is unverified, success is confirmed with a
+        follow-up Offshoot existence read rather than trusted.
+
+        :returns: The would-be POST fields when ``dry_run``, else ``None``.
+        :raises AuthenticationError: If the server rejects the request
+            (401/403) -- creating forums requires special privileges.
+        :raises ForumError: If the forum does not exist after the POST.
+        """
+        fields = {
+            "action": "create",
+            "referer": "",
+            "forumid": forum_id,
+            "forumname": name,
+            "forumhome": home or "",
+            "public_read": public_read,
+            "public_write": public_write,
+            "submit": "Create Forum",
+        }
+        if dry_run:
+            return fields
+        self._require_auth()
+        r = self.session.post(
+            f"{self.base_url}{_FORUM_NEW_PATH}", data=fields, timeout=60
+        )
+        if r.status_code in (401, 403):
+            raise AuthenticationError(
+                "not authorized to create forums -- forum creation requires "
+                "special privileges on archive.org"
+            )
+        r.raise_for_status()
+        if not self.exists(forum_id):
+            raise ForumError(
+                f"forum '{forum_id}' was not created (the server accepted "
+                "the request but the forum still does not exist)"
+            )
+        return None

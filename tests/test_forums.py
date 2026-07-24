@@ -5,7 +5,11 @@ import pytest
 import responses
 
 from internetarchive import forums, get_session
-from internetarchive.exceptions import ForumError, ForumNotFoundError
+from internetarchive.exceptions import (
+    AuthenticationError,
+    ForumError,
+    ForumNotFoundError,
+)
 
 DATA = Path(__file__).parent / "data" / "forums"
 OFFSHOOT_URL = "https://archive.org/services/offshoot/forum-posts.php"
@@ -177,3 +181,200 @@ def test_backend_get_thread_format_changed():
     )
     with pytest.raises(ForumError, match="format may have changed"):
         _backend().get_thread("2445301")
+
+
+POST_NEW_URL = "https://archive.org/iathreads/post-new.php"
+FORUM_NEW_URL = "https://archive.org/iathreads/forum-new.php"
+
+
+def _compose_form():
+    return (DATA / "compose_form.html").read_text()
+
+
+def _last_request_body():
+    return responses.calls[-1].request.body
+
+
+def test_require_auth_no_cookies():
+    with pytest.raises(AuthenticationError, match="ia configure"):
+        _backend(cookies=False)._require_auth()
+
+
+def test_require_auth_with_cookies():
+    _backend()._require_auth()  # should not raise
+
+
+@responses.activate
+def test_submit_post_fields():
+    responses.add(responses.GET, POST_NEW_URL, body=_compose_form())
+    responses.add(
+        responses.POST, POST_NEW_URL, body=(DATA / "post_success.html").read_text()
+    )
+    _backend().submit_post("GratefulDead", "A subject", "A body")
+    body = _last_request_body()
+    if isinstance(body, bytes):
+        body = body.decode()
+    # multipart fields echo the scraped form values
+    assert "eyJHDR.eyJub25jZSI6ImFiYzEyMyJ9.SIG" in body
+    assert "2026-07-23 17:00:00" in body
+    assert 'name="postsubject"' in body
+    assert "A subject" in body
+    assert 'name="postbody"' in body
+    assert "A body" in body
+    assert 'name="forum"' in body
+    assert "GratefulDead" in body
+    assert 'name="referer"' in body
+    # the real submit button, NOT the "Add Files" attachment button
+    assert "Submit Post" in body
+    assert "Add Files" not in body
+    # form fetch targeted the right compose URL
+    assert responses.calls[0].request.url.startswith(POST_NEW_URL)
+    assert "forum=GratefulDead" in responses.calls[0].request.url
+
+
+@responses.activate
+def test_submit_reply_fields():
+    responses.add(responses.GET, POST_NEW_URL, body=_compose_form())
+    responses.add(
+        responses.POST, POST_NEW_URL, body=(DATA / "post_success.html").read_text()
+    )
+    _backend().submit_reply(
+        "GratefulDead", "2445301", "2445303", "Re: A subject", "A reply"
+    )
+    form_url = responses.calls[0].request.url
+    assert "reply=1" in form_url
+    assert "parentid=2445303" in form_url
+    assert "threadid=2445301" in form_url
+    assert "nested=1" in form_url
+    body = _last_request_body()
+    if isinstance(body, bytes):
+        body = body.decode()
+    assert 'name="parentid"' in body
+    assert "2445303" in body
+    assert 'name="threadid"' in body
+    assert "2445301" in body
+    assert 'name="nested"' in body
+
+
+@responses.activate
+def test_submit_edit_fields():
+    responses.add(responses.GET, POST_NEW_URL, body=_compose_form())
+    responses.add(
+        responses.POST, POST_NEW_URL, body=(DATA / "edit_success.html").read_text()
+    )
+    _backend().submit_edit(
+        "GratefulDead", "2445303", "2445301", "New subject", "New body"
+    )
+    form_url = responses.calls[0].request.url
+    assert "action=edit" in form_url
+    assert "id=2445303" in form_url
+    assert "threadid=2445301" in form_url
+    body = _last_request_body()
+    if isinstance(body, bytes):
+        body = body.decode()
+    assert 'name="action"' in body
+    assert "edit" in body
+    assert 'name="id"' in body
+
+
+@responses.activate
+def test_submit_post_rejected():
+    responses.add(responses.GET, POST_NEW_URL, body=_compose_form())
+    responses.add(
+        responses.POST, POST_NEW_URL, body=(DATA / "post_failure.html").read_text()
+    )
+    with pytest.raises(ForumError, match="usual causes"):
+        _backend().submit_post("GratefulDead", "s", "b")
+
+
+@responses.activate
+def test_submit_post_no_csrf_missing_forum():
+    responses.add(
+        responses.GET,
+        POST_NEW_URL,
+        body=(DATA / "compose_form_nocsrf.html").read_text(),
+    )
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": True, "value": {"exists": False, "html": None}},
+    )
+    with pytest.raises(ForumNotFoundError, match="ia forum create"):
+        _backend().submit_post("nosuchforum", "s", "b")
+
+
+@responses.activate
+def test_submit_post_no_csrf_stale_cookies():
+    responses.add(
+        responses.GET,
+        POST_NEW_URL,
+        body=(DATA / "compose_form_nocsrf.html").read_text(),
+    )
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": True, "value": {"exists": True, "html": ""}},
+    )
+    with pytest.raises(AuthenticationError, match="stale"):
+        _backend().submit_post("GratefulDead", "s", "b")
+
+
+@responses.activate
+def test_submit_post_dry_run_does_not_post():
+    # only the GET is registered: a POST would error the test
+    responses.add(responses.GET, POST_NEW_URL, body=_compose_form())
+    fields = _backend().submit_post("GratefulDead", "A subject", "A body", dry_run=True)
+    assert fields["postsubject"] == "A subject"
+    assert fields["submit"] == "Submit Post"
+    assert fields["csrf_token"].startswith("eyJHDR.")
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_create_forum_fields_and_verify():
+    responses.add(responses.POST, FORUM_NEW_URL, body="<title>ok</title>")
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": True, "value": {"exists": True, "html": ""}},
+    )
+    _backend().create_forum(
+        "mycoll", "My Collection Forum", "/details/mycoll?tab=forum", "0", "0"
+    )
+    body = responses.calls[0].request.body
+    assert "action=create" in body
+    assert "forumid=mycoll" in body
+    assert "forumname=My+Collection+Forum" in body
+    assert "forumhome=%2Fdetails%2Fmycoll%3Ftab%3Dforum" in body
+    assert "public_read=0" in body
+    assert "public_write=0" in body
+    assert "submit=Create+Forum" in body
+    # creation is verified via a follow-up Offshoot existence read
+    assert "forum_id=mycoll" in responses.calls[1].request.url
+
+
+@responses.activate
+def test_create_forum_unauthorized():
+    responses.add(responses.POST, FORUM_NEW_URL, status=401)
+    with pytest.raises(AuthenticationError, match="not authorized"):
+        _backend().create_forum("mycoll", "Name", None, "0", "0")
+
+
+@responses.activate
+def test_create_forum_verify_fails():
+    responses.add(responses.POST, FORUM_NEW_URL, body="<title>ok</title>")
+    responses.add(
+        responses.GET,
+        OFFSHOOT_URL,
+        json={"success": True, "value": {"exists": False, "html": None}},
+    )
+    with pytest.raises(ForumError, match="was not created"):
+        _backend().create_forum("mycoll", "Name", None, "0", "0")
+
+
+@responses.activate
+def test_create_forum_dry_run():
+    fields = _backend().create_forum("mycoll", "Name", None, "0", "0", dry_run=True)
+    assert fields["action"] == "create"
+    assert fields["forumid"] == "mycoll"
+    assert len(responses.calls) == 0
