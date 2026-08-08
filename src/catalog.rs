@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{Map, Value};
 
 /// Statuses that mean a task is still active.
@@ -75,7 +75,7 @@ impl CatalogTask {
         } else if let Ok(parsed) = NaiveDateTime::parse_from_str(submittime, "%Y-%m-%d %H:%M:%S") {
             chrono::DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc)
         } else {
-            Utc::now()
+            DateTime::<Utc>::from_timestamp(0, 0).expect("valid epoch timestamp")
         }
     }
 }
@@ -120,6 +120,8 @@ mod tests {
 
     #[test]
     fn sorts_by_date() {
+        use chrono::Datelike;
+
         let task = CatalogTask::from_json(&serde_json::json!({
             "task_id": 123,
             "submittime": "2026-05-28 12:00:00"
