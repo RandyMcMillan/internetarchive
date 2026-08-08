@@ -1,0 +1,6 @@
+[build-system]
+requires = ["maturin>=1,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "internetarchive_rust"
