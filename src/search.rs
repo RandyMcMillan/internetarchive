@@ -20,6 +20,25 @@ impl SearchQuery {
         }
     }
 
+    /// Set the query fields.
+    pub fn with_fields(mut self, fields: Vec<String>) -> Self {
+        self.fields = fields;
+        self
+    }
+
+    /// Set the sort order values.
+    pub fn with_sorts(mut self, sorts: Vec<String>) -> Self {
+        self.sorts = sorts;
+        self
+    }
+
+    /// Enable full-text search.
+    pub fn with_full_text_search(mut self, dsl_fts: bool) -> Self {
+        self.full_text_search = true;
+        self.dsl_fts = dsl_fts;
+        self
+    }
+
     /// Build the effective query string used by the Python `Search` class.
     pub fn effective_query(&self) -> String {
         if self.full_text_search && !self.dsl_fts {
@@ -57,6 +76,27 @@ impl SearchQuery {
         }
         params
     }
+
+    /// Build the JSON payload used by the full-text search endpoint.
+    pub fn fts_payload(&self, size: Option<usize>, scope: Option<&str>) -> Vec<(String, String)> {
+        let mut payload = vec![
+            ("q".to_string(), self.effective_query()),
+            ("size".to_string(), size.unwrap_or(10_000).to_string()),
+            ("from".to_string(), "0".to_string()),
+            (
+                "scroll".to_string(),
+                if size.is_some() {
+                    "false".to_string()
+                } else {
+                    "true".to_string()
+                },
+            ),
+        ];
+        if let Some(scope) = scope {
+            payload.push(("scope".to_string(), scope.to_string()));
+        }
+        payload
+    }
 }
 
 #[cfg(test)]
@@ -78,6 +118,22 @@ mod tests {
                 ("fl[1]".to_string(), "identifier".to_string()),
                 ("sort[0]".to_string(), "downloads desc".to_string()),
                 ("output".to_string(), "json".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_fts_payload() {
+        let query = SearchQuery::new("nasa").with_full_text_search(false);
+        let payload = query.fts_payload(Some(250), Some("mediatype"));
+        assert_eq!(
+            payload,
+            vec![
+                ("q".to_string(), "!L nasa".to_string()),
+                ("size".to_string(), "250".to_string()),
+                ("from".to_string(), "0".to_string()),
+                ("scroll".to_string(), "false".to_string()),
+                ("scope".to_string(), "mediatype".to_string()),
             ]
         );
     }
