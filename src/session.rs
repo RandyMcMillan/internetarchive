@@ -1,4 +1,6 @@
-use crate::config::{ConfigMap, ConfigValue};
+use std::path::Path;
+
+use crate::config::{ConfigMap, ConfigValue, get_config};
 
 /// Session configuration used by the Rust core.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +87,19 @@ impl ArchiveSession {
             config.host.push_str(".archive.org");
         }
         Self { config }
+    }
+
+    /// Create a session from a merged configuration map.
+    pub fn from_config_map(config: &ConfigMap) -> Self {
+        Self::new(ArchiveSessionConfig::from_config_map(config))
+    }
+
+    /// Create a session from config sources using the Python merge order.
+    pub fn from_config(
+        config: Option<ConfigMap>,
+        config_file: Option<&Path>,
+    ) -> Result<Self, crate::config::ConfigError> {
+        Ok(Self::from_config_map(&get_config(config, config_file)?))
     }
 
     /// Return the URL scheme used by the session.
@@ -183,5 +198,18 @@ mod tests {
         assert_eq!(session.user_agent_suffix.as_deref(), Some("Rust/0.1"));
         assert_eq!(session.access_key.as_deref(), Some("AK"));
         assert_eq!(session.secret_key.as_deref(), Some("SK"));
+    }
+
+    #[test]
+    fn builds_session_from_config() {
+        let config = ConfigMap::from([(
+            "general".to_string(),
+            ConfigValue::Map(ConfigMap::from([(
+                "secure".to_string(),
+                ConfigValue::Bool(false),
+            )])),
+        )]);
+        let session = ArchiveSession::from_config_map(&config);
+        assert_eq!(session.protocol(), "http:");
     }
 }
