@@ -13,7 +13,16 @@ pub mod search;
 pub mod session;
 pub mod utils;
 
-pub use config::{ConfigMap, ConfigValue, deep_update};
+pub use config::{
+    ConfigError,
+    ConfigFileResolution,
+    ConfigMap,
+    ConfigValue,
+    deep_update,
+    get_config,
+    parse_config_file,
+    parse_config_file_path,
+};
 pub use errors::IdentifierError;
 pub use identifier::validate_s3_identifier;
 pub use item::{ArchiveFile, ArchiveItem, ArchiveItemKind};

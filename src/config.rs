@@ -99,7 +99,7 @@ pub fn parse_config_file_path(config_file: Option<&Path>) -> ConfigFileResolutio
         path: env::var_os("IA_CONFIG_FILE")
             .map(PathBuf::from)
             .unwrap_or(xdg_config_file),
-        is_xdg: false,
+        is_xdg: env::var_os("IA_CONFIG_FILE").is_none(),
     }
 }
 
