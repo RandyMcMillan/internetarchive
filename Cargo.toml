@@ -10,3 +10,4 @@ documentation = "https://archive.org/services/docs/api/internetarchive"
 readme = "README.rst"
 
 [dependencies]
+glob = "0.3"
