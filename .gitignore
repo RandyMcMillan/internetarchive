@@ -34,3 +34,8 @@ ia.dist/
 ia.bin
 scripts/
 foo.txt
+
+
+# Added by cargo
+
+/target
