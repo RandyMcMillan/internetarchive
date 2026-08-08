@@ -1,12 +1,25 @@
-.PHONY: docs clean clean-dist test binary test-binary check-release check-version \
-        build check-dist tag push-tag upload-pypi publish-binary-upload github-release \
-        publish publish-binary docs-init init prepare-release
+.PHONY: docs clean clean-dist test cargo-test cargo-fmt cargo-clippy python-test \
+        binary test-binary check-release check-version build check-dist tag push-tag \
+        upload-pypi publish-binary-upload github-release publish publish-binary \
+        docs-init init prepare-release
 
 VERSION=$(shell grep -m1 __version__ internetarchive/__version__.py | cut -d\' -f2)
 
 # ============ Development ============
 init:
 	pip install -e '.[all]'
+
+cargo-test:
+	cargo test --workspace
+
+cargo-fmt:
+	cargo fmt --all --check
+
+cargo-clippy:
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+python-test:
+	python3 -m pytest
 
 clean:
 	find . -type f -name '*\.pyc' -delete
@@ -16,9 +29,10 @@ clean-dist:
 	rm -rf dist/ build/ *.egg-info
 
 test:
+	cargo test --workspace
 	ruff check
 	ruff format --check
-	pytest
+	python3 -m pytest
 
 # ============ Documentation ============
 docs-init:
