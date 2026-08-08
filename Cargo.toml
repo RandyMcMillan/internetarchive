@@ -1,11 +1,12 @@
 [package]
-name = "internetarchive"
-version = "0.0.0"
+name = "internetarchive-core"
+version = "0.1.0"
 edition = "2024"
-description = "A Rust interface to archive.org."
+description = "Pure Rust core for Archive.org client functionality."
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/RandyMcMillan/internetarchive"
 homepage = "https://archive.org/services/docs/api/internetarchive"
 documentation = "https://archive.org/services/docs/api/internetarchive"
+readme = "README.rst"
 
 [dependencies]
