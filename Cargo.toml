@@ -11,3 +11,4 @@ readme = "README.rst"
 
 [dependencies]
 glob = "0.3"
+md5 = "0.7"
