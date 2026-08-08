@@ -5,8 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod account;
 pub mod config;
 pub mod auth;
+pub mod catalog;
 pub mod errors;
 pub mod identifier;
 pub mod iarequest;
@@ -26,6 +28,8 @@ pub use config::{
     parse_config_file_path,
 };
 pub use auth::{S3Auth, S3PostAuth};
+pub use account::Account;
+pub use catalog::{CatalogTask, ACTIVE_TASK_STATUSES, task_is_active, task_log_should_continue};
 pub use errors::IdentifierError;
 pub use identifier::validate_s3_identifier;
 pub use iarequest::{
