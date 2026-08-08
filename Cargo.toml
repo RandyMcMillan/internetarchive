@@ -12,3 +12,6 @@ readme = "README.rst"
 [dependencies]
 glob = "0.3"
 md5 = "0.7"
+serde_json = "1"
+json-patch = "3"
+urlencoding = "2"

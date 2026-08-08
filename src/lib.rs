@@ -6,8 +6,10 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod auth;
 pub mod errors;
 pub mod identifier;
+pub mod iarequest;
 pub mod item;
 pub mod search;
 pub mod session;
@@ -23,8 +25,16 @@ pub use config::{
     parse_config_file,
     parse_config_file_path,
 };
+pub use auth::{S3Auth, S3PostAuth};
 pub use errors::IdentifierError;
 pub use identifier::validate_s3_identifier;
+pub use iarequest::{
+    prepare_files_patch,
+    prepare_metadata,
+    prepare_metadata_headers,
+    prepare_patch,
+    prepare_target_patch,
+};
 pub use item::{ArchiveFile, ArchiveItem, ArchiveItemKind};
 pub use search::SearchQuery;
 pub use session::{ArchiveSession, ArchiveSessionConfig};
