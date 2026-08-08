@@ -1,3 +1,5 @@
+use crate::config::{ConfigMap, ConfigValue};
+
 /// Session configuration used by the Rust core.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveSessionConfig {
@@ -16,6 +18,55 @@ impl Default for ArchiveSessionConfig {
             user_agent_suffix: None,
             access_key: None,
             secret_key: None,
+        }
+
+        impl ArchiveSessionConfig {
+            /// Build a session config from a merged config map.
+            pub fn from_config_map(config: &ConfigMap) -> Self {
+                let general = config.get("general");
+                let s3 = config.get("s3");
+
+                Self {
+                    secure: match general {
+                        Some(ConfigValue::Map(section)) => match section.get("secure") {
+                            Some(ConfigValue::Bool(value)) => *value,
+                            Some(ConfigValue::String(value)) => !value.eq_ignore_ascii_case("false"),
+                            _ => true,
+                        },
+                        _ => true,
+                    },
+                    host: match general {
+                        Some(ConfigValue::Map(section)) => match section.get("host") {
+                            Some(ConfigValue::String(value)) if !value.is_empty() => value.clone(),
+                            _ => "archive.org".to_string(),
+                        },
+                        _ => "archive.org".to_string(),
+                    },
+                    user_agent_suffix: match general {
+                        Some(ConfigValue::Map(section)) => match section.get("user_agent_suffix") {
+                            Some(ConfigValue::String(value)) if !value.is_empty() => {
+                                Some(value.clone())
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    access_key: match s3 {
+                        Some(ConfigValue::Map(section)) => match section.get("access") {
+                            Some(ConfigValue::String(value)) if !value.is_empty() => Some(value.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    secret_key: match s3 {
+                        Some(ConfigValue::Map(section)) => match section.get("secret") {
+                            Some(ConfigValue::String(value)) if !value.is_empty() => Some(value.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                }
+            }
         }
     }
 }
@@ -99,5 +150,38 @@ mod tests {
             session.user_agent_string("1.2.3", "Darwin", "x86_64", "en", "3.10.0"),
             "internetarchive/1.2.3 (Darwin x86_64; N; en; ACCESS) Python/3.10.0 MyApp/1.0"
         );
+    }
+
+    #[test]
+    fn builds_config_from_map() {
+        let config = ConfigMap::from([
+            (
+                "general".to_string(),
+                ConfigValue::Map(ConfigMap::from([
+                    ("secure".to_string(), ConfigValue::Bool(false)),
+                    (
+                        "host".to_string(),
+                        ConfigValue::String("beta".to_string()),
+                    ),
+                    (
+                        "user_agent_suffix".to_string(),
+                        ConfigValue::String("Rust/0.1".to_string()),
+                    ),
+                ])),
+            ),
+            (
+                "s3".to_string(),
+                ConfigValue::Map(ConfigMap::from([
+                    ("access".to_string(), ConfigValue::String("AK".to_string())),
+                    ("secret".to_string(), ConfigValue::String("SK".to_string())),
+                ])),
+            ),
+        ]);
+        let session = ArchiveSessionConfig::from_config_map(&config);
+        assert!(!session.secure);
+        assert_eq!(session.host, "beta");
+        assert_eq!(session.user_agent_suffix.as_deref(), Some("Rust/0.1"));
+        assert_eq!(session.access_key.as_deref(), Some("AK"));
+        assert_eq!(session.secret_key.as_deref(), Some("SK"));
     }
 }
