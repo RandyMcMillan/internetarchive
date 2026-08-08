@@ -19,54 +19,54 @@ impl Default for ArchiveSessionConfig {
             access_key: None,
             secret_key: None,
         }
+    }
+}
 
-        impl ArchiveSessionConfig {
-            /// Build a session config from a merged config map.
-            pub fn from_config_map(config: &ConfigMap) -> Self {
-                let general = config.get("general");
-                let s3 = config.get("s3");
+impl ArchiveSessionConfig {
+    /// Build a session config from a merged config map.
+    pub fn from_config_map(config: &ConfigMap) -> Self {
+        let general = config.get("general");
+        let s3 = config.get("s3");
 
-                Self {
-                    secure: match general {
-                        Some(ConfigValue::Map(section)) => match section.get("secure") {
-                            Some(ConfigValue::Bool(value)) => *value,
-                            Some(ConfigValue::String(value)) => !value.eq_ignore_ascii_case("false"),
-                            _ => true,
-                        },
-                        _ => true,
-                    },
-                    host: match general {
-                        Some(ConfigValue::Map(section)) => match section.get("host") {
-                            Some(ConfigValue::String(value)) if !value.is_empty() => value.clone(),
-                            _ => "archive.org".to_string(),
-                        },
-                        _ => "archive.org".to_string(),
-                    },
-                    user_agent_suffix: match general {
-                        Some(ConfigValue::Map(section)) => match section.get("user_agent_suffix") {
-                            Some(ConfigValue::String(value)) if !value.is_empty() => {
-                                Some(value.clone())
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                    access_key: match s3 {
-                        Some(ConfigValue::Map(section)) => match section.get("access") {
-                            Some(ConfigValue::String(value)) if !value.is_empty() => Some(value.clone()),
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                    secret_key: match s3 {
-                        Some(ConfigValue::Map(section)) => match section.get("secret") {
-                            Some(ConfigValue::String(value)) if !value.is_empty() => Some(value.clone()),
-                            _ => None,
-                        },
-                        _ => None,
-                    },
-                }
-            }
+        Self {
+            secure: match general {
+                Some(ConfigValue::Map(section)) => match section.get("secure") {
+                    Some(ConfigValue::Bool(value)) => *value,
+                    Some(ConfigValue::String(value)) => !value.eq_ignore_ascii_case("false"),
+                    _ => true,
+                },
+                _ => true,
+            },
+            host: match general {
+                Some(ConfigValue::Map(section)) => match section.get("host") {
+                    Some(ConfigValue::String(value)) if !value.is_empty() => value.clone(),
+                    _ => "archive.org".to_string(),
+                },
+                _ => "archive.org".to_string(),
+            },
+            user_agent_suffix: match general {
+                Some(ConfigValue::Map(section)) => match section.get("user_agent_suffix") {
+                    Some(ConfigValue::String(value)) if !value.is_empty() => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            access_key: match s3 {
+                Some(ConfigValue::Map(section)) => match section.get("access") {
+                    Some(ConfigValue::String(value)) if !value.is_empty() => Some(value.clone()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            secret_key: match s3 {
+                Some(ConfigValue::Map(section)) => match section.get("secret") {
+                    Some(ConfigValue::String(value)) if !value.is_empty() => Some(value.clone()),
+                    _ => None,
+                },
+                _ => None,
+            },
         }
     }
 }
