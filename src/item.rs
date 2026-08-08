@@ -256,4 +256,57 @@ mod tests {
         assert_eq!(item.kind(), ArchiveItemKind::Collection);
         assert!(item.has_file("nasa_meta.xml"));
     }
+
+    #[test]
+    fn filters_files_like_python() {
+        let mut item = ArchiveItem::new("nasa");
+        item.files = vec![
+            ArchiveFile {
+                identifier: "nasa".to_string(),
+                name: "nasa_meta.xml".to_string(),
+                size: None,
+                format: Some("Metadata".to_string()),
+                source: None,
+                md5: None,
+                sha1: None,
+                crc32: None,
+            },
+            ArchiveFile {
+                identifier: "nasa".to_string(),
+                name: "globe_west_540.jpg".to_string(),
+                size: None,
+                format: Some("JPEG".to_string()),
+                source: None,
+                md5: None,
+                sha1: None,
+                crc32: None,
+            },
+            ArchiveFile {
+                identifier: "nasa".to_string(),
+                name: "nasa_archive.torrent".to_string(),
+                size: None,
+                format: Some("Torrent".to_string()),
+                source: None,
+                md5: None,
+                sha1: None,
+                crc32: None,
+            },
+        ];
+
+        let selected = item.matching_files(
+            &[],
+            &[String::from("JPEG")],
+            &[String::from("*torrent|*jpg")],
+            &[],
+            false,
+        );
+        let names: Vec<_> = selected.into_iter().map(|file| file.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "globe_west_540.jpg".to_string(),
+                "nasa_archive.torrent".to_string(),
+            ]
+        );
+    }
 }
