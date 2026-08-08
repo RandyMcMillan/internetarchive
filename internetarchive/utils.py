@@ -37,6 +37,12 @@ import warnings
 from collections.abc import Iterable, Mapping
 from xml.dom.minidom import parseString
 
+from internetarchive._rust import (
+    RUST_AVAILABLE,
+    sanitize_windows_filename as rust_sanitize_windows_filename,
+    validate_s3_identifier as rust_validate_s3_identifier,
+)
+
 # Make preferred JSON package available via `from internetarchive.utils import json`
 try:
     import ujson as json
@@ -84,6 +90,12 @@ def validate_s3_identifier(string: str) -> bool:
     :returns: ``True`` if the identifier is valid.
     :raises InvalidIdentifierException: If the identifier is invalid.
     """
+    if RUST_AVAILABLE:
+        try:
+            return rust_validate_s3_identifier(string)
+        except ImportError:
+            pass
+
     legal_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-'
     # periods, underscores, and dashes are legal, but may not be the first
     # character!
@@ -659,6 +671,12 @@ def sanitize_windows_filename(name: str) -> tuple[str, bool]:
 
     Returns (sanitized_name, modified_flag).
     """
+    if RUST_AVAILABLE:
+        try:
+            return rust_sanitize_windows_filename(name)
+        except ImportError:
+            pass
+
     original = name
     if not name:
         return name, False
