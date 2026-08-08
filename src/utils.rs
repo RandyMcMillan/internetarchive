@@ -1,7 +1,6 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
-use std::path::MAIN_SEPARATOR;
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use serde_json::{Map, Value};
 
 /// Normalize a path into Archive.org-style forward-slash form with a leading `/`.
@@ -166,6 +165,61 @@ pub fn get_md5<R: Read + Seek>(reader: &mut R) -> std::io::Result<String> {
 /// Return the size of a file on disk.
 pub fn get_file_size(path: impl AsRef<std::path::Path>) -> std::io::Result<u64> {
     Ok(fs::metadata(path)?.len())
+}
+
+/// Yield file paths and relative keys for all files under a directory.
+pub fn iter_directory(directory: &Path) -> std::io::Result<Vec<(PathBuf, PathBuf)>> {
+    let mut items = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            items.extend(iter_directory(&path)?);
+        } else {
+            let key = path
+                .strip_prefix(directory)
+                .unwrap_or(&path)
+                .to_path_buf();
+            items.push((path, key));
+        }
+    }
+    Ok(items)
+}
+
+/// Count files and total size recursively.
+pub fn recursive_file_count_and_size(
+    files: &[impl AsRef<Path>],
+) -> std::io::Result<(usize, u64)> {
+    let mut total_files = 0;
+    let mut total_size = 0;
+    for file in files {
+        let path = file.as_ref();
+        if path.is_dir() {
+            for (item_path, _) in iter_directory(path)? {
+                total_files += 1;
+                total_size += get_file_size(item_path)?;
+            }
+        } else {
+            total_files += 1;
+            total_size += get_file_size(path)?;
+        }
+    }
+    Ok((total_files, total_size))
+}
+
+/// Count files recursively.
+pub fn recursive_file_count(files: &[impl AsRef<Path>]) -> std::io::Result<usize> {
+    recursive_file_count_and_size(files).map(|(count, _)| count)
+}
+
+/// Return true when a value is directory-like.
+pub fn is_dir(path: impl AsRef<Path>) -> bool {
+    path.as_ref().is_dir()
+}
+
+/// Return true when a value is not path-like and should be treated as file-like.
+pub fn is_filelike_obj<T: ?Sized>(_: &T) -> bool {
+    false
 }
 
 fn encode_percent(byte: u8) -> String {
@@ -352,5 +406,22 @@ mod tests {
             Some(&Value::String(".archive.org".to_string()))
         );
         assert_eq!(cookies.get("path"), Some(&Value::String("/".to_string())));
+    }
+
+    #[test]
+    fn counts_files_recursively() {
+        let tmp = std::env::temp_dir().join(format!(
+            "internetarchive-core-{}",
+            std::process::id()
+        ));
+        let nested = tmp.join("nested");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(tmp.join("a.txt"), b"a").unwrap();
+        fs::write(nested.join("b.txt"), b"bb").unwrap();
+        let (count, size) = recursive_file_count_and_size(&[tmp.as_path()]).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(size, 3);
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
