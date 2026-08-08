@@ -39,3 +39,12 @@ pub use item::{ArchiveFile, ArchiveItem, ArchiveItemKind};
 pub use search::SearchQuery;
 pub use session::{ArchiveSession, ArchiveSessionConfig};
 pub use utils::{flatten_pipe_patterns, needs_quote, norm_filepath};
+pub use utils::{
+    is_path_within_directory,
+    is_valid_metadata_key,
+    is_windows,
+    merge_dictionaries,
+    parse_dict_cookies,
+    sanitize_windows_filename,
+    sanitize_windows_relpath,
+};
